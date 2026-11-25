@@ -8,14 +8,27 @@ Ratatui TUI for the [NetBird](https://netbird.io) client — a port of [`netbird
 - full `netbird status --detail`, scrollable
 - preview pane, fuzzy `/` filter, live command output (SSO login URLs show up there)
 
+## Install
+
 ```sh
-cargo install --path .
+cargo install --git https://github.com/coko7/nbi
+```
+
+Or from a local checkout: `cargo install --path .`
+
+## Usage
+
+```sh
 nbi        # TUI
 nbi -x     # TUI that quits after a successful action (launcher style)
 ```
 
 Keys: `↑↓`/`jk` move · `enter` select · `/` filter · `space`/`tab` toggle route ·
 `a`/`n` all/none · `r` refresh · `esc` back · `q` quit.
+
+In the status detail pane: `ctrl+u`/`ctrl+d` half page · `g`/`G` top/bottom ·
+`y` copy the full output (via `wl-copy`, `xclip` or `xsel`, else an OSC 52
+terminal escape).
 
 ## Waybar
 

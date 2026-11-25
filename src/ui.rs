@@ -375,16 +375,25 @@ fn route_preview(app: &App) -> Vec<Line<'static>> {
 // Full-screen detail
 // ---------------------------------------------------------------------------
 
-fn draw_detail(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_detail(frame: &mut Frame, area: Rect, app: &mut App) {
+    app.detail_height = area.height.saturating_sub(2);
     let text = match &app.detail {
         None => Text::from("loading…".dark_gray()),
         Some(Ok(text)) => Text::from(text.clone()),
         Some(Err(err)) => Text::from(Span::raw(err.clone()).red()),
     };
+    let total = app.detail_lines();
+    let mut detail_block = block(" netbird status --detail ");
+    if total > 0 {
+        let first = usize::from(app.detail_scroll) + 1;
+        let last = (first + usize::from(app.detail_height)).saturating_sub(1).min(total);
+        detail_block = detail_block
+            .title_top(Line::from(format!(" {first}-{last}/{total} ").dark_gray()).right_aligned());
+    }
     frame.render_widget(
         Paragraph::new(text)
             .scroll((app.detail_scroll, 0))
-            .block(block(" netbird status --detail ")),
+            .block(detail_block),
         area,
     );
 }
@@ -448,7 +457,14 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("enter", "apply"),
             ("esc", "back"),
         ]),
-        (View::Detail, _) => hints(&[("↑↓/jk", "scroll"), ("g/G", "top/bottom"), ("r", "reload"), ("esc", "back")]),
+        (View::Detail, _) => hints(&[
+            ("↑↓/jk", "scroll"),
+            ("^u/^d", "half page"),
+            ("g/G", "top/bottom"),
+            ("y", "copy"),
+            ("r", "reload"),
+            ("esc", "back"),
+        ]),
     };
     frame.render_widget(Paragraph::new(keys), area);
 
