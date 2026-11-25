@@ -13,7 +13,7 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::ListState;
 
-use crate::integrations::{notify, notify_connection, signal_waybar};
+use crate::integrations::{copy_to_clipboard, notify, notify_connection, signal_waybar};
 use crate::netbird::{self, Netbird, Profile, Route, Status};
 
 const REFRESH_EVERY: Duration = Duration::from_secs(5);
@@ -71,6 +71,8 @@ pub struct App {
     routes_touched: bool,
     pub detail: Loaded<String>,
     pub detail_scroll: u16,
+    /// Inner height of the detail pane at last render (for paging).
+    pub detail_height: u16,
 
     pub menu_state: ListState,
     pub profile_state: ListState,
@@ -105,6 +107,7 @@ impl App {
             routes_touched: false,
             detail: None,
             detail_scroll: 0,
+            detail_height: 0,
             menu_state: ListState::default().with_selected(Some(0)),
             profile_state: ListState::default(),
             route_state: ListState::default(),
@@ -504,19 +507,24 @@ impl App {
     }
 
     fn on_detail_key(&mut self, key: KeyEvent) {
-        let lines = match &self.detail {
-            Some(Ok(text)) => text.lines().count(),
-            _ => 0,
-        };
-        let max = u16::try_from(lines.saturating_sub(1)).unwrap_or(u16::MAX);
+        let page = self.detail_height.max(2);
+        let half = page / 2;
+        let max = self.detail_max_scroll();
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let s = self.detail_scroll;
         self.detail_scroll = match key.code {
+            KeyCode::Char('u') if ctrl => s.saturating_sub(half),
+            KeyCode::Char('d') if ctrl => s.saturating_add(half),
             KeyCode::Up | KeyCode::Char('k') => s.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => s.saturating_add(1),
-            KeyCode::PageUp => s.saturating_sub(15),
-            KeyCode::PageDown | KeyCode::Char(' ') => s.saturating_add(15),
+            KeyCode::PageUp => s.saturating_sub(page),
+            KeyCode::PageDown | KeyCode::Char(' ') => s.saturating_add(page),
             KeyCode::Home | KeyCode::Char('g') => 0,
             KeyCode::End | KeyCode::Char('G') => max,
+            KeyCode::Char('y') => {
+                self.copy_detail();
+                s
+            }
             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
                 self.view = View::Menu;
                 s
@@ -524,6 +532,29 @@ impl App {
             _ => s,
         }
         .min(max);
+    }
+
+    pub fn detail_lines(&self) -> usize {
+        match &self.detail {
+            Some(Ok(text)) => text.lines().count(),
+            _ => 0,
+        }
+    }
+
+    /// Scroll offset that puts the last line at the bottom of the pane.
+    fn detail_max_scroll(&self) -> u16 {
+        let max = self.detail_lines().saturating_sub(usize::from(self.detail_height.max(1)));
+        u16::try_from(max).unwrap_or(u16::MAX)
+    }
+
+    fn copy_detail(&mut self) {
+        let Some(Ok(text)) = &self.detail else {
+            self.flash("nothing to copy yet");
+            return;
+        };
+        let via = copy_to_clipboard(text);
+        let msg = format!("copied {} lines ({via})", text.lines().count());
+        self.flash(msg);
     }
 
     // -----------------------------------------------------------------------
@@ -818,6 +849,31 @@ mod tests {
         assert_eq!(app.view, View::Menu);
         assert!(app.busy.is_none());
         assert_eq!(app.flash.as_ref().map(|(m, _)| m.as_str()), Some("no changes"));
+    }
+
+    #[test]
+    fn detail_half_page_scroll() {
+        let mut app = connected_app();
+        app.view = View::Detail;
+        app.detail = Some(Ok((1..=100).map(|n| format!("line {n}\n")).collect()));
+        render(&mut app);
+        let height = app.detail_height;
+        assert!(height > 2);
+
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        app.on_key(ctrl('d'));
+        assert_eq!(app.detail_scroll, height / 2);
+        app.on_key(ctrl('d'));
+        app.on_key(ctrl('u'));
+        assert_eq!(app.detail_scroll, height / 2);
+        app.on_key(ctrl('u'));
+        app.on_key(ctrl('u'));
+        assert_eq!(app.detail_scroll, 0);
+
+        // G stops with the last line at the bottom of the pane
+        press(&mut app, &[KeyCode::Char('G')]);
+        assert_eq!(app.detail_scroll, 100 - height);
+        assert!(render(&mut app).contains("line 100"));
     }
 
     #[test]

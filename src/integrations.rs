@@ -2,7 +2,7 @@
 //! Everything shells out — no extra crates, failures are silently ignored.
 
 use std::env;
-use std::io;
+use std::io::{self, Write};
 use std::process::{Command, Stdio};
 use std::thread;
 
@@ -53,6 +53,63 @@ pub fn signal_waybar() {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+}
+
+/// Copy to the system clipboard via wl-copy / xclip / xsel (whichever fits the
+/// session and is installed), else an OSC 52 escape that the terminal itself
+/// handles (kitty, ghostty, foot, wezterm, alacritty...). Returns the method used.
+pub fn copy_to_clipboard(text: &str) -> &'static str {
+    let wayland = env::var_os("WAYLAND_DISPLAY").is_some();
+    let x11 = env::var_os("DISPLAY").is_some();
+    let tools: [(&'static str, &[&str], bool); 3] = [
+        ("wl-copy", &[], wayland),
+        ("xclip", &["-selection", "clipboard"], x11),
+        ("xsel", &["--clipboard", "--input"], x11),
+    ];
+    for (program, args, _) in tools.into_iter().filter(|(_, _, usable)| *usable) {
+        if pipe_into(program, args, text).is_ok() {
+            return program;
+        }
+    }
+    let mut stdout = io::stdout().lock();
+    let _ = write!(stdout, "\x1b]52;c;{}\x07", base64(text.as_bytes()));
+    let _ = stdout.flush();
+    "OSC 52"
+}
+
+fn pipe_into(program: &str, args: &[&str], text: &str) -> io::Result<()> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    // dropping stdin right after the write sends EOF
+    let written = child.stdin.take().map_or(Ok(()), |mut stdin| stdin.write_all(text.as_bytes()));
+    let status = child.wait()?;
+    written?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("{program} exited with {status}")))
+    }
+}
+
+fn base64(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let bytes = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (u32::from(bytes[0]) << 16) | (u32::from(bytes[1]) << 8) | u32::from(bytes[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(TABLE[((n >> (18 - 6 * i)) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// Spawn without waiting on the caller's thread; a helper thread reaps the child.
@@ -113,4 +170,18 @@ pub fn waybar_json(nb: &Netbird, status: &Status, disconnected_text: &str) -> St
 /// Waybar renders text/tooltip as Pango markup.
 fn pango_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::base64;
+
+    #[test]
+    fn base64_padding() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64("hello ✓".as_bytes()), "aGVsbG8g4pyT");
+    }
 }
